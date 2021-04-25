@@ -83,7 +83,7 @@ static int newlines2 = 0;
 static const char SANITIZED = '*';
 
 /* Size of current file.  */
-static off_t current_file_size = 0;
+static size_t current_file_size = 0;
 
 void
 usage (int status)
@@ -353,7 +353,7 @@ cat (
      bool squeeze_blank,
      bool sanitize,
      const char * sanitized_memory,
-     off_t sanitized_memory_size)
+     size_t sanitized_memory_size)
 {
   /* Last character read from the input buffer.  */
   unsigned char ch;
@@ -392,15 +392,13 @@ cat (
 
   bpout = outbuf;
 
-  //todo probably a good idea to not do this!
+#ifdef FIONREAD
+  /* If sanitize is on, read will be replaced with memcpy, so this is pointless.  */
   if (sanitize)
   {
-    for (size_t i = 0; i < sanitized_memory_size; i++)
-    {
-      putchar(sanitized_memory[i]);
-    }
-    return true;
+    use_fionread = false;
   }
+#endif
 
   while (true)
     {
@@ -469,21 +467,34 @@ cat (
                 write_pending (outbuf, &bpout);
 
               /* Read more input into INBUF.  */
+              /* If sanitize is on, memcpy from sanitized memory instead of reading.  */
+              if (sanitize)
+              {
+                n_read = MIN(insize, sanitized_memory_size);
+                memcpy(inbuf, sanitized_memory, n_read);
+                sanitized_memory += n_read;
+                sanitized_memory_size -= n_read;
+              }
+              /* Otherwise read from the input file descriptor.  */
+              else
+              {
+                n_read = safe_read (input_desc, inbuf, insize);
+                if (n_read == SAFE_READ_ERROR)
+                  {
+                    error (0, errno, "%s", quotef (infile));
+                    write_pending (outbuf, &bpout);
+                    newlines2 = newlines;
+                    return false;
+                  }
+              }
 
-              n_read = safe_read (input_desc, inbuf, insize);
-              if (n_read == SAFE_READ_ERROR)
-                {
-                  error (0, errno, "%s", quotef (infile));
-                  write_pending (outbuf, &bpout);
-                  newlines2 = newlines;
-                  return false;
-                }
+              /* If reading is done, write the remainder and return.  */
               if (n_read == 0)
-                {
-                  write_pending (outbuf, &bpout);
-                  newlines2 = newlines;
-                  return true;
-                }
+              {
+                write_pending (outbuf, &bpout);
+                newlines2 = newlines;
+                return true;
+              }
 
               /* Update the pointers and insert a sentinel at the buffer
                  end.  */
@@ -844,7 +855,7 @@ main (int argc, char **argv)
       current_file_size = stat_buf.st_size;
       if (out_isreg
           && stat_buf.st_dev == out_dev && stat_buf.st_ino == out_ino
-          && lseek (input_desc, 0, SEEK_CUR) < current_file_size)
+          && lseek (input_desc, 0, SEEK_CUR) < stat_buf.st_size)
         {
           error (0, 0, _("%s: input file is output file"), quotef (infile));
           ok = false;
