@@ -307,8 +307,6 @@ sanitize_current_file(const char * wordlist,
     return false;
   }
 
-  printf("Sanitizing %s with wordlist %s\n", infile, wordlist);
-
   /* Sanitize the file.  */
   do
   {
