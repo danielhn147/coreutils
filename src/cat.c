@@ -208,6 +208,12 @@ replace_all(char * buffer, size_t buffer_size,
   size_t new_buffer_size = buffer_size;
   size_t i, j;
 
+  /* If the pattern size is 0, this will crash.  */
+  if (pattern_size == 0)
+  {
+    return new_buffer_size;
+  }
+
   /* Perform the replacement, using KMP pattern searching algorithm.  */
 
   /* The pattern wand contains the proper prefix and suffix for the pattern.  */
@@ -292,17 +298,59 @@ sanitize_current_file(const char * wordlist,
                       char * sanitized_memory,
                       size_t * sanitized_memory_size)
 {
-  char words[][32] = {"hello", "goodbye"};
+  char * current_word = NULL;
+  size_t current_word_size = 0;
+  ssize_t bytes_read = 0;
 
-  printf("Sanitizing %s with wordlist %s: %s, %s\n", infile, wordlist, words[0], words[1]);
+  /* Open the wordlist file.  */
+  FILE * wordlist_file = fopen(wordlist, "r");
+  if (wordlist_file == NULL)
+  {
+    error (0, errno, "fopen failed on wordlist %s", quotef (wordlist));
+    return false;
+  }
+
+  printf("Sanitizing %s with wordlist %s\n", infile, wordlist);
 
   /* Sanitize the file.  */
-  for (size_t i = 0; i < 2; i++)
+  do
   {
+    /* Read the next line of the wordlist.  */
+    /* Set errno to 0 because when getline fails on EOF it doesn't set errno.  */
+    errno = 0;
+    /* Getline allocates memory by itself, make sure it is freed.  */
+    bytes_read = getline(&current_word, &current_word_size, wordlist_file);
+    if (bytes_read == -1)
+    {
+      free(current_word);
+      current_word = NULL;
+      current_word_size = 0;
+      /* End of file.  */
+      if (errno == 0)
+      {
+        break;
+      }
+      /* Getline failed.  */
+      else
+      {
+        error (0, errno, "getline failed on wordlist %s", quotef (wordlist));
+        return false;
+      }
+    }
+    /* If the last character is a newline, remove it.  */
+    if (current_word[bytes_read - 1] == '\n')
+    {
+      current_word[bytes_read - 1] = 0;
+      bytes_read--;
+    }
+
     *sanitized_memory_size = replace_all(sanitized_memory, *sanitized_memory_size,
-                                         words[i], strlen(words[i]),
+                                         current_word, bytes_read,
                                          SANITIZED);
-  }
+    free(current_word);
+    current_word = NULL;
+    current_word_size = 0;
+  } while(true);
 
   return true;
 }
