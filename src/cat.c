@@ -103,6 +103,7 @@ Concatenate FILE(s) to standard output.\n\
   -E, --show-ends          display $ at end of each line\n\
   -n, --number             number all output lines\n\
   -s, --squeeze-blank      suppress repeated empty output lines\n\
+  -S, --sanitize=WORDLIST  replace all occurrences of words in wordlist with *\n\
 "), stdout);
       fputs (_("\
   -t                       equivalent to -vT\n\
@@ -232,7 +233,9 @@ cat (
      bool number,
      bool number_nonblank,
      bool show_ends,
-     bool squeeze_blank)
+     bool squeeze_blank,
+     bool sanitize,
+     const char * sanitize_from)
 {
   /* Last character read from the input buffer.  */
   unsigned char ch;
@@ -270,6 +273,13 @@ cat (
   bpin = eob + 1;
 
   bpout = outbuf;
+
+  //todo remove this!
+  // test sanitize arg
+  if (sanitize)
+  {
+    printf("sanitize from file %s\n", sanitize_from);
+  }
 
   while (true)
     {
@@ -551,6 +561,8 @@ main (int argc, char **argv)
   bool show_ends = false;
   bool show_nonprinting = false;
   bool show_tabs = false;
+  bool sanitize = false;
+  char const * sanitize_from = NULL;
   int file_open_mode = O_RDONLY;
 
   static struct option const long_options[] =
@@ -562,6 +574,7 @@ main (int argc, char **argv)
     {"show-ends", no_argument, NULL, 'E'},
     {"show-tabs", no_argument, NULL, 'T'},
     {"show-all", no_argument, NULL, 'A'},
+    {"sanitize", required_argument, NULL, 'S'},
     {GETOPT_HELP_OPTION_DECL},
     {GETOPT_VERSION_OPTION_DECL},
     {NULL, 0, NULL, 0}
@@ -581,7 +594,7 @@ main (int argc, char **argv)
 
   /* Parse command line options.  */
 
-  while ((c = getopt_long (argc, argv, "benstuvAET", long_options, NULL))
+  while ((c = getopt_long (argc, argv, "benstuvAETS:", long_options, NULL))
          != -1)
     {
       switch (c)
@@ -629,6 +642,11 @@ main (int argc, char **argv)
 
         case 'T':
           show_tabs = true;
+          break;
+
+        case 'S':
+          sanitize = true;
+          sanitize_from = optarg;
           break;
 
         case_GETOPT_HELP_CHAR;
@@ -713,7 +731,7 @@ main (int argc, char **argv)
          options were given use 'cat'; otherwise use 'simple_cat'.  */
 
       if (! (number || show_ends || show_nonprinting
-             || show_tabs || squeeze_blank))
+             || show_tabs || squeeze_blank || sanitize))
         {
           insize = MAX (insize, outsize);
           inbuf = xmalloc (insize + page_size - 1);
@@ -752,7 +770,7 @@ main (int argc, char **argv)
           ok &= cat (ptr_align (inbuf, page_size), insize,
                      ptr_align (outbuf, page_size), outsize, show_nonprinting,
                      show_tabs, number, number_nonblank, show_ends,
-                     squeeze_blank);
+                     squeeze_blank, sanitize, sanitize_from);
 
           free (outbuf);
         }
