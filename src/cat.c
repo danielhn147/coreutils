@@ -31,6 +31,7 @@
 # include <stropts.h>
 #endif
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 
 #include "system.h"
 #include "ioblksize.h"
@@ -77,6 +78,12 @@ static char *line_num_end = line_buf + LINE_COUNTER_BUF_LEN - 3;
 
 /* Preserves the 'cat' function's local 'newlines' between invocations.  */
 static int newlines2 = 0;
+
+/* Replace sanitized words with this.  Hardcoded for now.  */
+static const char SANITIZED = '*';
+
+/* Size of current file.  */
+static off_t current_file_size = 0;
 
 void
 usage (int status)
@@ -190,6 +197,116 @@ simple_cat (
     }
 }
 
+/* Replaces all occurrences of a pattern in buffer with a given character.
+   Returns the new size of the buffer.  */
+
+static size_t
+replace_all(char * buffer, size_t buffer_size,
+            char * pattern, size_t pattern_size,
+            char replacement)
+{
+  size_t new_buffer_size = buffer_size;
+  size_t i, j;
+
+  /* Perform the replacement, using KMP pattern searching algorithm.  */
+
+  /* The pattern wand contains the proper prefix and suffix for the pattern.  */
+  size_t * pattern_wand = xcalloc(pattern_size, sizeof(*pattern_wand));
+  /* Initialize the pattern wand.  */
+  size_t length = 0;
+  pattern_wand[0] = 0;
+  i = 1;
+  while (i < pattern_size)
+  {
+    if (pattern[i] == pattern[length])
+    {
+      length++;
+      pattern_wand[i] = length;
+      i++;
+    }
+    else
+    {
+      if (length != 0)
+      {
+        length = pattern_wand[length - 1];
+      }
+      else
+      {
+        pattern_wand[i] = 0;
+        i++;
+      }
+    }
+  }
+
+  /* Perform the replacements.  */
+  i = 0; // index in the buffer
+  j = 0; // index in the pattern
+  while (i < buffer_size)
+  {
+    /* If the current characters match, increment the indexes.  */
+    if (pattern[j] == buffer[i])
+    {
+      j++;
+      i++;
+    }
+
+    /* A match was found starting at index (i - j).  */
+    if (j == pattern_size)
+    {
+      /* Replace the first character of the match.  */
+      buffer[i - j] = replacement;
+      /* Move the whole buffer backwards.  */
+      memmove(buffer + i - j + 1, buffer + i, buffer_size - i);
+      /* Change the new buffer size.  */
+      new_buffer_size -= pattern_size - 1;
+
+      /* Go to the next character after the replacement.  */
+      i = i - j + 1;
+      j = 0;
+    }
+
+    /* Go back to the last possible match.  */
+    else if (i < buffer_size && pattern[j] != buffer[i])
+    {
+      if (j != 0)
+      {
+        j = pattern_wand[j - 1];
+      }
+      else
+      {
+        i++;
+      }
+    }
+  }
+
+  free(pattern_wand);
+  return new_buffer_size;
+}
+
+/* Sanitize given memory, replacing words from the wordlist with `SANITIZED`.
+   Replaces the size in `sanitized_memory_size` with the new size of the memory.
+   Return true on success.  */
+
+static bool
+sanitize_current_file(const char * wordlist,
+                      char * sanitized_memory,
+                      size_t * sanitized_memory_size)
+{
+  char words[][32] = {"hello", "goodbye"};
+
+  printf("Sanitizing %s with wordlist %s: %s, %s\n", infile, wordlist, words[0], words[1]);
+
+  /* Sanitize the file.  */
+  for (size_t i = 0; i < 2; i++)
+  {
+    *sanitized_memory_size = replace_all(sanitized_memory, *sanitized_memory_size,
+                                         words[i], strlen(words[i]),
+                                         SANITIZED);
+  }
+
+  return true;
+}
+
 /* Write any pending output to STDOUT_FILENO.
    Pending is defined to be the *BPOUT - OUTBUF bytes starting at OUTBUF.
    Then set *BPOUT to OUTPUT if it's not already that value.  */
@@ -235,7 +352,8 @@ cat (
      bool show_ends,
      bool squeeze_blank,
      bool sanitize,
-     const char * sanitize_from)
+     const char * sanitized_memory,
+     off_t sanitized_memory_size)
 {
   /* Last character read from the input buffer.  */
   unsigned char ch;
@@ -274,11 +392,14 @@ cat (
 
   bpout = outbuf;
 
-  //todo remove this!
-  // test sanitize arg
+  //todo probably a good idea to not do this!
   if (sanitize)
   {
-    printf("sanitize from file %s\n", sanitize_from);
+    for (size_t i = 0; i < sanitized_memory_size; i++)
+    {
+      putchar(sanitized_memory[i]);
+    }
+    return true;
   }
 
   while (true)
@@ -562,7 +683,9 @@ main (int argc, char **argv)
   bool show_nonprinting = false;
   bool show_tabs = false;
   bool sanitize = false;
-  char const * sanitize_from = NULL;
+  char const * sanitize_wordlist = NULL;
+  char * sanitized_memory = MAP_FAILED;
+  size_t sanitized_memory_size = 0;
   int file_open_mode = O_RDONLY;
 
   static struct option const long_options[] =
@@ -646,7 +769,7 @@ main (int argc, char **argv)
 
         case 'S':
           sanitize = true;
-          sanitize_from = optarg;
+          sanitize_wordlist = optarg;
           break;
 
         case_GETOPT_HELP_CHAR;
@@ -718,14 +841,38 @@ main (int argc, char **argv)
          merely exhaust the output device.  It's better to catch this
          error earlier rather than later.  */
 
+      current_file_size = stat_buf.st_size;
       if (out_isreg
           && stat_buf.st_dev == out_dev && stat_buf.st_ino == out_ino
-          && lseek (input_desc, 0, SEEK_CUR) < stat_buf.st_size)
+          && lseek (input_desc, 0, SEEK_CUR) < current_file_size)
         {
           error (0, 0, _("%s: input file is output file"), quotef (infile));
           ok = false;
           goto contin;
         }
+
+      /* Sanitize the file.  */
+      if (sanitize)
+      {
+        /* Map the file to memory for sanitization.  */
+        sanitized_memory = mmap(NULL, current_file_size, PROT_READ | PROT_WRITE,
+                                MAP_PRIVATE, input_desc, 0);
+        if (sanitized_memory == MAP_FAILED)
+        {
+          error (0, errno, ("mmap failed on %s"), quoteaf (infile));
+          ok = false;
+          goto contin;
+        }
+        sanitized_memory_size = current_file_size;
+
+        /* Sanitize the mapped file.  */
+        if (!sanitize_current_file(sanitize_wordlist, sanitized_memory, &sanitized_memory_size))
+        {
+          munmap(sanitized_memory, sanitized_memory_size);
+          ok = false;
+          goto contin;
+        }
+      }
 
       /* Select which version of 'cat' to use.  If any format-oriented
          options were given use 'cat'; otherwise use 'simple_cat'.  */
@@ -770,11 +917,12 @@ main (int argc, char **argv)
           ok &= cat (ptr_align (inbuf, page_size), insize,
                      ptr_align (outbuf, page_size), outsize, show_nonprinting,
                      show_tabs, number, number_nonblank, show_ends,
-                     squeeze_blank, sanitize, sanitize_from);
+                     squeeze_blank, sanitize, sanitized_memory, sanitized_memory_size);
 
           free (outbuf);
         }
 
+      munmap(sanitized_memory, sanitized_memory_size);
       free (inbuf);
 
     contin:
