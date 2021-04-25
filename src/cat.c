@@ -82,9 +82,6 @@ static int newlines2 = 0;
 /* Replace sanitized words with this.  Hardcoded for now.  */
 static const char SANITIZED = '*';
 
-/* Size of current file.  */
-static size_t current_file_size = 0;
-
 void
 usage (int status)
 {
@@ -900,7 +897,6 @@ main (int argc, char **argv)
          merely exhaust the output device.  It's better to catch this
          error earlier rather than later.  */
 
-      current_file_size = stat_buf.st_size;
       if (out_isreg
           && stat_buf.st_dev == out_dev && stat_buf.st_ino == out_ino
           && lseek (input_desc, 0, SEEK_CUR) < stat_buf.st_size)
@@ -914,7 +910,8 @@ main (int argc, char **argv)
       if (sanitize)
       {
         /* Map the file to memory for sanitization.  */
-        sanitized_memory = mmap(NULL, current_file_size, PROT_READ | PROT_WRITE,
+        sanitized_memory_size = stat_buf.st_size;
+        sanitized_memory = mmap(NULL, sanitized_memory_size, PROT_READ | PROT_WRITE,
                                 MAP_PRIVATE, input_desc, 0);
         if (sanitized_memory == MAP_FAILED)
         {
@@ -922,7 +919,6 @@ main (int argc, char **argv)
           ok = false;
           goto contin;
         }
-        sanitized_memory_size = current_file_size;
 
         /* Sanitize the mapped file.  */
         if (!sanitize_current_file(sanitize_wordlist, sanitized_memory, &sanitized_memory_size))
